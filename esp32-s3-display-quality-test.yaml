@@ -1,0 +1,138 @@
+# ESP32-S3 Display Quality Test
+# Minimal config: Display only - no sensors, no relays, no climate
+# Tests high-resolution display capability with full 16-bit color on ESP32-S3 16MB/8MB PSRAM
+
+esphome:
+  name: esp32-s3-display-test
+  friendly_name: ESP32-S3 Display Quality Test
+
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: arduino
+    version: recommended
+  platformio_options:
+    board_build.flash_size: 16MB
+    board_build.psram_type: opi
+    board_build.psram_size: 8MB
+
+logger:
+  level: INFO
+
+# Optional: Uncomment and add your WiFi/OTA for flashing. Or use USB/serial.
+# wifi:
+#   networks:
+#     - ssid: "YourSSID"
+#       password: "YourPassword"
+#   ap:
+#     ssid: "ESP32-S3-Display-Test"
+#     password: "display123"
+#
+# ota:
+#   - platform: esphome
+#     password: "your_ota_password"
+
+# ======================
+# DISPLAY HARDWARE
+# ======================
+spi:
+  clk_pin: GPIO18
+  mosi_pin: GPIO23
+
+font:
+  - file: "gfonts://Roboto"
+    id: font_large
+    size: 32
+  - file: "gfonts://Roboto"
+    id: font_medium
+    size: 20
+  - file: "gfonts://Roboto"
+    id: font_small
+    size: 14
+
+display:
+  - platform: st7789v
+    id: my_display
+    model: CUSTOM
+    height: 320
+    width: 240
+    offset_height: 0
+    offset_width: 0
+    cs_pin: GPIO27
+    dc_pin: GPIO14
+    reset_pin: GPIO4
+    rotation: 90
+    # HIGH QUALITY: Full 16-bit color (65K colors) - ESP32-S3 + 8MB PSRAM can handle this
+    eightbitcolor: false
+    update_interval: 100ms
+    lambda: |-
+      // ===== HIGH QUALITY DISPLAY TEST =====
+      // Tests: gradients, text rendering, color depth, smooth graphics
+      auto BLACK   = Color(0, 0, 0);
+      auto WHITE   = Color(255, 255, 255);
+      auto RED     = Color(255, 50, 50);
+      auto GREEN   = Color(50, 255, 80);
+      auto BLUE    = Color(50, 100, 255);
+      auto CYAN    = Color(0, 220, 220);
+      auto MAGENTA = Color(255, 0, 255);
+      auto YELLOW  = Color(255, 230, 0);
+
+      // Frame counter for performance test
+      static int frame_count = 0;
+      static unsigned long last_fps_time = millis();
+      frame_count++;
+      unsigned long now = millis();
+      float fps = (now - last_fps_time > 1000) ? 
+        (frame_count * 1000.0f / (now - last_fps_time)) : 0;
+      if (now - last_fps_time > 1000) {
+        frame_count = 0;
+        last_fps_time = now;
+      }
+
+      // Display: 320x240 (rotated 90)
+      // ===== 1. FULL SCREEN GRADIENT (tests color depth) =====
+      for (int i = 0; i < 24; i++) {
+        int y = i * 10;
+        uint8_t r = (i * 255) / 23;
+        uint8_t g = 128;
+        uint8_t b = 255 - (i * 255) / 23;
+        it.filled_rectangle(0, y, 320, 10, Color(r, g, b));
+      }
+
+      // ===== 2. COLOR BARS (tests color accuracy) =====
+      it.filled_rectangle(0, 0, 320, 28, Color(30, 30, 50));
+      it.filled_rectangle(0, 0, 40, 14, RED);
+      it.filled_rectangle(40, 0, 40, 14, GREEN);
+      it.filled_rectangle(80, 0, 40, 14, BLUE);
+      it.filled_rectangle(120, 0, 40, 14, CYAN);
+      it.filled_rectangle(160, 0, 40, 14, MAGENTA);
+      it.filled_rectangle(200, 0, 40, 14, YELLOW);
+      it.filled_rectangle(240, 0, 40, 14, WHITE);
+      it.filled_rectangle(280, 0, 40, 14, BLACK);
+
+      // ===== 3. TITLE =====
+      it.print(160, 8, id(font_medium), WHITE, TextAlign::CENTER, "ESP32-S3 Display Test");
+
+      // ===== 4. INFO PANEL =====
+      it.filled_rectangle(8, 40, 304, 80, Color(20, 25, 40));
+      it.rectangle(8, 40, 304, 80, CYAN);
+      it.print(160, 52, id(font_small), CYAN, TextAlign::CENTER, "HIGH QUALITY MODE");
+      it.printf(160, 70, id(font_small), WHITE, TextAlign::CENTER, "16-bit color | 320x240");
+      it.printf(160, 88, id(font_small), GREEN, TextAlign::CENTER, "FPS: %.1f", fps);
+      it.printf(160, 106, id(font_small), YELLOW, TextAlign::CENTER, "Free RAM: %u KB", ESP.getFreeHeap() / 1024);
+
+      // ===== 5. SMOOTH GRADIENT RECTANGLES =====
+      for (int i = 0; i < 8; i++) {
+        int x = 8 + i * 39;
+        uint8_t shade = 30 + i * 28;
+        it.filled_rectangle(x, 132, 37, 40, Color(shade, shade, shade + 50));
+      }
+
+      // ===== 6. TEXT SHARPNESS TEST =====
+      it.filled_rectangle(8, 180, 304, 50, Color(15, 15, 25));
+      it.print(160, 192, id(font_large), WHITE, TextAlign::CENTER, "Sharp Text");
+      it.print(160, 218, id(font_small), Color(180, 180, 200), TextAlign::CENTER, "ABCDEFG 0123456789");
+
+      // ===== 7. BOTTOM STATUS =====
+      it.filled_rectangle(0, 212, 320, 28, Color(25, 25, 40));
+      it.printf(160, 223, id(font_small), GREEN, TextAlign::CENTER, "ESP32-S3 16MB/8MB PSRAM OK");
