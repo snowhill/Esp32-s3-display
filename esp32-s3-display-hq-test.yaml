@@ -19,7 +19,7 @@ logger:
 
 spi:
   clk_pin: GPIO18
-  mosi_pin: GPIO23
+  mosi_pin: GPIO11
 
 display:
   - platform: st7789v
