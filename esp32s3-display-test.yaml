@@ -1,0 +1,437 @@
+# ==============================================================================
+# ESP32-S3 (N16R8) — High-Resolution Display Test
+# ==============================================================================
+#
+# Board : ESP32-S3-DevKitC-1 with 16 MB Flash / 8 MB Octal PSRAM
+# Display: ST7789V  320×240  (landscape via 90° rotation)
+# Purpose: Verify the S3 can drive the display at FULL 16-bit colour depth
+#          with complex rendering, large fonts, and smooth gradients —
+#          no sensors, relays, or other peripherals required.
+#
+# ──── Wiring Guide (ESP32-S3 → Display) ─────────────────────────
+#   GPIO12  →  SCK  (SPI Clock)
+#   GPIO11  →  SDA  (SPI MOSI / Data)
+#   GPIO10  →  CS   (Chip Select)
+#   GPIO13  →  DC   (Data / Command)
+#   GPIO14  →  RES  (Reset)
+#   GPIO21  →  BLK  (Backlight — or wire to 3.3 V for always-on)
+#   3.3 V   →  VCC
+#   GND     →  GND
+#
+# NOTE: On the N16R8 module, GPIO 26-37 are reserved for octal
+#       flash / PSRAM.  All pins chosen above are safe.
+# ==============================================================================
+
+esphome:
+  name: esp32s3-display-test
+  friendly_name: "ESP32-S3 Display Test"
+  on_boot:
+    priority: 200
+    then:
+      - lambda: |-
+          id(boot_time) = millis();
+          id(last_fps_time) = millis();
+
+esp32:
+  board: esp32-s3-devkitc-1
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+    version: recommended
+    sdkconfig_options:
+      CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240: "y"
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+logger:
+  level: DEBUG
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "S3-Display-Test"
+    password: "test12345"
+
+captive_portal:
+
+# ==============================================================================
+# GLOBALS
+# ==============================================================================
+globals:
+  - id: boot_time
+    type: unsigned long
+    initial_value: '0'
+
+  - id: test_page
+    type: int
+    initial_value: '0'
+
+  - id: total_pages
+    type: int
+    initial_value: '5'
+
+  - id: frame_count
+    type: unsigned long
+    initial_value: '0'
+
+  - id: last_fps_time
+    type: unsigned long
+    initial_value: '0'
+
+  - id: current_fps
+    type: float
+    initial_value: '0.0'
+
+  - id: last_render_ms
+    type: unsigned long
+    initial_value: '0'
+
+# ==============================================================================
+# SPI BUS  (80 MHz capable on S3)
+# ==============================================================================
+spi:
+  clk_pin: GPIO12
+  mosi_pin: GPIO11
+
+# ==============================================================================
+# FONTS  (downloaded from Google Fonts at compile time)
+# ==============================================================================
+font:
+  - file: "gfonts://Roboto"
+    id: font_h1
+    size: 36
+
+  - file: "gfonts://Roboto"
+    id: font_h2
+    size: 28
+
+  - file: "gfonts://Roboto"
+    id: font_body
+    size: 20
+
+  - file: "gfonts://Roboto"
+    id: font_small
+    size: 16
+
+  - file: "gfonts://Roboto"
+    id: font_tiny
+    size: 12
+
+  - file: "gfonts://Roboto@700"
+    id: font_bold
+    size: 24
+
+# ==============================================================================
+# DISPLAY — ST7789V  (full 16-bit colour, 80 MHz SPI)
+# ==============================================================================
+display:
+  - platform: ili9xxx
+    model: ST7789V
+    id: my_display
+    cs_pin: GPIO10
+    dc_pin: GPIO13
+    reset_pin: GPIO14
+    dimensions:
+      height: 320
+      width: 240
+    rotation: 90
+    data_rate: 80MHz
+    color_order: RGB
+    invert_colors: true
+    update_interval: never
+    lambda: |-
+      // ── frame-time bookkeeping ──
+      unsigned long render_start = millis();
+      id(frame_count) += 1;
+      if (millis() - id(last_fps_time) >= 1000) {
+        id(current_fps) = id(frame_count) * 1000.0f / (millis() - id(last_fps_time));
+        id(frame_count) = 0;
+        id(last_fps_time) = millis();
+      }
+
+      // ── colour palette ──
+      auto BLACK      = Color(0, 0, 0);
+      auto WHITE      = Color(255, 255, 255);
+      auto RED        = Color(255, 0, 0);
+      auto GREEN      = Color(0, 255, 0);
+      auto BLUE       = Color(0, 0, 255);
+      auto CYAN       = Color(0, 255, 255);
+      auto MAGENTA    = Color(255, 0, 255);
+      auto YELLOW     = Color(255, 255, 0);
+      auto ORANGE     = Color(255, 160, 0);
+      auto PURPLE     = Color(128, 0, 255);
+      auto TEAL       = Color(0, 200, 180);
+      auto GREY       = Color(128, 128, 128);
+      auto DARK_BG    = Color(15, 15, 25);
+      auto PANEL      = Color(25, 28, 40);
+      auto ACCENT     = Color(0, 180, 255);
+      auto SOFT_WHITE = Color(200, 200, 210);
+      auto DARK_GREY  = Color(40, 42, 55);
+
+      it.fill(DARK_BG);
+
+      // ── persistent status bar (top 20 px) ──
+      it.filled_rectangle(0, 0, 320, 20, DARK_GREY);
+      it.printf(4, 10, id(font_tiny), ACCENT, TextAlign::CENTER_LEFT,
+                "ESP32-S3  16-BIT COLOUR  80 MHz SPI");
+      it.printf(316, 10, id(font_tiny), SOFT_WHITE, TextAlign::CENTER_RIGHT,
+                "Page %d/%d", id(test_page) + 1, id(total_pages));
+
+      // ====================================================================
+      // PAGE 0 — COLOUR BARS & SMOOTH GRADIENTS
+      // ====================================================================
+      if (id(test_page) == 0) {
+        it.print(160, 38, id(font_h2), WHITE, TextAlign::CENTER, "COLOUR TEST");
+        it.filled_rectangle(40, 54, 240, 2, ACCENT);
+
+        int bar_w = 34;
+        int bar_h = 55;
+        int y0 = 64;
+        Color bars[] = {RED, GREEN, BLUE, CYAN, MAGENTA, YELLOW, WHITE, ORANGE};
+        const char* lbl[] = {"R","G","B","C","M","Y","W","O"};
+        for (int i = 0; i < 8; i++) {
+          int x = 14 + i * (bar_w + 3);
+          it.filled_rectangle(x, y0, bar_w, bar_h, bars[i]);
+          it.printf(x + bar_w / 2, y0 + bar_h + 10, id(font_tiny),
+                    SOFT_WHITE, TextAlign::CENTER, "%s", lbl[i]);
+        }
+
+        // rainbow gradient — tests smooth 16-bit transitions
+        it.print(160, 142, id(font_small), GREY, TextAlign::CENTER,
+                 "16-bit Rainbow Gradient");
+        for (int x = 0; x < 300; x++) {
+          float t = x / 299.0f;
+          uint8_t r, g, b;
+          if (t < 0.2f)       { float s = t / 0.2f;           r = 255; g = (uint8_t)(s*255); b = 0; }
+          else if (t < 0.4f)  { float s = (t-0.2f) / 0.2f;    r = (uint8_t)((1-s)*255); g = 255; b = 0; }
+          else if (t < 0.6f)  { float s = (t-0.4f) / 0.2f;    r = 0; g = 255; b = (uint8_t)(s*255); }
+          else if (t < 0.8f)  { float s = (t-0.6f) / 0.2f;    r = 0; g = (uint8_t)((1-s)*255); b = 255; }
+          else                 { float s = (t-0.8f) / 0.2f;    r = (uint8_t)(s*255); g = 0; b = 255; }
+          it.filled_rectangle(10 + x, 154, 1, 22, Color(r, g, b));
+        }
+
+        // greyscale gradient
+        it.print(160, 190, id(font_small), GREY, TextAlign::CENTER,
+                 "Greyscale Gradient");
+        for (int x = 0; x < 300; x++) {
+          uint8_t v = (uint8_t)(x * 255 / 299);
+          it.filled_rectangle(10 + x, 202, 1, 18, Color(v, v, v));
+        }
+      }
+
+      // ====================================================================
+      // PAGE 1 — GEOMETRIC SHAPES
+      // ====================================================================
+      else if (id(test_page) == 1) {
+        it.print(160, 38, id(font_h2), WHITE, TextAlign::CENTER, "SHAPES TEST");
+        it.filled_rectangle(40, 54, 240, 2, ACCENT);
+
+        // filled circles with outlines
+        it.filled_circle(50,  100, 30, RED);     it.circle(50,  100, 32, WHITE);
+        it.filled_circle(120, 100, 30, GREEN);   it.circle(120, 100, 32, WHITE);
+        it.filled_circle(190, 100, 30, BLUE);    it.circle(190, 100, 32, WHITE);
+        it.filled_circle(260, 100, 30, YELLOW);  it.circle(260, 100, 32, WHITE);
+
+        // overlapping semi-transparent-style rectangles
+        it.filled_rectangle(20,  148, 80, 45, Color(200, 50, 50));
+        it.filled_rectangle(50,  158, 80, 45, Color(50, 200, 50));
+        it.filled_rectangle(80,  168, 80, 45, Color(50, 50, 200));
+
+        // nested outlined rectangles
+        it.rectangle(195, 145, 70, 70, CYAN);
+        it.rectangle(200, 150, 60, 60, MAGENTA);
+        it.rectangle(205, 155, 50, 50, YELLOW);
+        it.rectangle(210, 160, 40, 40, GREEN);
+        it.rectangle(215, 165, 30, 30, RED);
+
+        // coloured line strip
+        it.horizontal_line(10, 228, 300, ACCENT);
+        for (int i = 0; i < 16; i++) {
+          uint8_t c = i * 16;
+          it.vertical_line(10 + i * 19, 228, 10, Color(c, 255 - c, 128));
+        }
+      }
+
+      // ====================================================================
+      // PAGE 2 — TYPOGRAPHY & READABILITY
+      // ====================================================================
+      else if (id(test_page) == 2) {
+        it.print(160, 38, id(font_h2), WHITE, TextAlign::CENTER, "FONT TEST");
+        it.filled_rectangle(40, 54, 240, 2, ACCENT);
+
+        it.print(10, 68,  id(font_h1),    WHITE,      TextAlign::TOP_LEFT, "36px Header");
+        it.print(10, 108, id(font_h2),    ACCENT,     TextAlign::TOP_LEFT, "28px Sub-Header");
+        it.print(10, 140, id(font_bold),  ORANGE,     TextAlign::TOP_LEFT, "24px Bold Weight");
+        it.print(10, 168, id(font_body),  SOFT_WHITE, TextAlign::TOP_LEFT, "20px Body text is crisp");
+        it.print(10, 192, id(font_small), GREEN,      TextAlign::TOP_LEFT, "16px: ABCDEFGHIJ 0123456789");
+        it.print(10, 212, id(font_tiny),  GREY,       TextAlign::TOP_LEFT,
+                 "12px: The quick brown fox jumps over the lazy dog");
+        it.print(10, 228, id(font_tiny),  TEAL,       TextAlign::TOP_LEFT,
+                 "Symbols: +-./%*=<>()[]{}!@#$^&");
+      }
+
+      // ====================================================================
+      // PAGE 3 — PERFORMANCE DASHBOARD
+      // ====================================================================
+      else if (id(test_page) == 3) {
+        it.print(160, 38, id(font_h2), WHITE, TextAlign::CENTER, "PERFORMANCE");
+        it.filled_rectangle(40, 54, 240, 2, ACCENT);
+
+        unsigned long uptime_sec = (millis() - id(boot_time)) / 1000;
+        int up_h = uptime_sec / 3600;
+        int up_m = (uptime_sec % 3600) / 60;
+        int up_s = uptime_sec % 60;
+
+        int row = 64;
+        int rh  = 28;
+
+        // FPS
+        it.filled_rectangle(8, row, 304, rh, PANEL);
+        it.print(16, row + rh/2, id(font_body), SOFT_WHITE, TextAlign::CENTER_LEFT, "Frame Rate:");
+        auto fps_c = (id(current_fps) > 10) ? GREEN : ((id(current_fps) > 4) ? YELLOW : RED);
+        it.printf(304, row + rh/2, id(font_body), fps_c, TextAlign::CENTER_RIGHT,
+                  "%.1f FPS", id(current_fps));
+        row += rh + 4;
+
+        // Render time
+        it.filled_rectangle(8, row, 304, rh, PANEL);
+        it.print(16, row + rh/2, id(font_body), SOFT_WHITE, TextAlign::CENTER_LEFT, "Render Time:");
+        it.printf(304, row + rh/2, id(font_body), ACCENT, TextAlign::CENTER_RIGHT,
+                  "%lu ms", id(last_render_ms));
+        row += rh + 4;
+
+        // Internal heap
+        it.filled_rectangle(8, row, 304, rh, PANEL);
+        it.print(16, row + rh/2, id(font_body), SOFT_WHITE, TextAlign::CENTER_LEFT, "Free Heap:");
+        uint32_t free_heap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+        auto heap_c = (free_heap > 100000) ? GREEN : ((free_heap > 50000) ? YELLOW : RED);
+        it.printf(304, row + rh/2, id(font_body), heap_c, TextAlign::CENTER_RIGHT,
+                  "%u KB", free_heap / 1024);
+        row += rh + 4;
+
+        // PSRAM
+        it.filled_rectangle(8, row, 304, rh, PANEL);
+        it.print(16, row + rh/2, id(font_body), SOFT_WHITE, TextAlign::CENTER_LEFT, "Free PSRAM:");
+        uint32_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+        auto ps_c = (free_psram > 4000000) ? GREEN : ((free_psram > 1000000) ? YELLOW : RED);
+        it.printf(304, row + rh/2, id(font_body), ps_c, TextAlign::CENTER_RIGHT,
+                  "%.1f MB", free_psram / 1048576.0f);
+        row += rh + 4;
+
+        // Uptime
+        it.filled_rectangle(8, row, 304, rh, PANEL);
+        it.print(16, row + rh/2, id(font_body), SOFT_WHITE, TextAlign::CENTER_LEFT, "Uptime:");
+        it.printf(304, row + rh/2, id(font_body), GREEN, TextAlign::CENTER_RIGHT,
+                  "%02d:%02d:%02d", up_h, up_m, up_s);
+      }
+
+      // ====================================================================
+      // PAGE 4 — STRESS TEST (many draw calls)
+      // ====================================================================
+      else if (id(test_page) == 4) {
+        it.print(160, 38, id(font_h2), WHITE, TextAlign::CENTER, "STRESS TEST");
+        it.filled_rectangle(40, 54, 240, 2, ACCENT);
+
+        // concentric circles — tests anti-overlap rendering
+        for (int r = 10; r <= 80; r += 4) {
+          uint8_t h = (r * 3) % 256;
+          it.circle(85, 155, r, Color(h, 255 - h, (h + 128) % 256));
+        }
+
+        // colour grid — 12×10 = 120 small filled rectangles
+        for (int gy = 0; gy < 10; gy++) {
+          for (int gx = 0; gx < 12; gx++) {
+            uint8_t r = gx * 21;
+            uint8_t g = gy * 25;
+            uint8_t b = (gx + gy) * 12;
+            it.filled_rectangle(180 + gx * 11, 64 + gy * 17, 10, 16, Color(r, g, b));
+          }
+        }
+
+        // animated diagonal lines — verifies smooth refresh
+        int t = (millis() / 80) % 320;
+        for (int i = 0; i < 12; i++) {
+          int x1 = (t + i * 26) % 320;
+          int x2 = (t + i * 26 + 60) % 320;
+          uint8_t c = (i * 20) % 256;
+          it.line(x1, 60, x2, 234, Color(c, 200, 255 - c));
+        }
+
+        // render-time overlay so you can watch it under heavy load
+        it.filled_rectangle(8, 222, 140, 16, Color(0, 0, 0));
+        it.printf(12, 230, id(font_tiny), YELLOW, TextAlign::CENTER_LEFT,
+                  "Render: %lu ms  FPS: %.0f", id(last_render_ms), id(current_fps));
+      }
+
+      // store render time for next frame's display
+      id(last_render_ms) = millis() - render_start;
+
+# ==============================================================================
+# REFRESH & AUTO-CYCLE
+# ==============================================================================
+interval:
+  - interval: 100ms
+    then:
+      - lambda: "id(my_display).update();"
+
+  - interval: 8s
+    then:
+      - lambda: |-
+          id(test_page) += 1;
+          if (id(test_page) >= id(total_pages)) id(test_page) = 0;
+
+# ==============================================================================
+# BACKLIGHT (PWM via LEDC — wire BLK pin to GPIO21)
+# ==============================================================================
+output:
+  - platform: ledc
+    pin: GPIO21
+    id: display_backlight
+
+light:
+  - platform: monochromatic
+    output: display_backlight
+    name: "Display Backlight"
+    restore_mode: ALWAYS_ON
+
+# ==============================================================================
+# HOME ASSISTANT CONTROLS  (manual page switch & diagnostics)
+# ==============================================================================
+button:
+  - platform: template
+    name: "Next Test Page"
+    icon: "mdi:page-next"
+    on_press:
+      - lambda: |-
+          id(test_page) += 1;
+          if (id(test_page) >= id(total_pages)) id(test_page) = 0;
+
+  - platform: restart
+    name: "Restart ESP"
+
+sensor:
+  - platform: wifi_signal
+    name: "WiFi Signal"
+    update_interval: 30s
+
+  - platform: internal_temperature
+    name: "ESP32-S3 Chip Temp"
+    update_interval: 10s
+
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: "IP Address"
+    ssid:
+      name: "Connected SSID"
