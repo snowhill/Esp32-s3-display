@@ -1,0 +1,167 @@
+substitutions:
+  name: esp32-s3-display-hq-test
+  friendly_name: "ESP32-S3 Display HQ Test"
+
+  # -----------------------------
+  # Display settings (EDIT THESE)
+  # -----------------------------
+  tft_width: "240"
+  tft_height: "320"
+  tft_rotation: "90"
+
+  # SPI pins (set to your wiring / PCB)
+  tft_clk: GPIO18
+  tft_mosi: GPIO23
+  tft_cs: GPIO27
+  tft_dc: GPIO14
+  tft_reset: GPIO4
+
+  # Optional backlight PWM pin (remove `output:`/`light:` sections if not used)
+  tft_bl: GPIO5
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  on_boot:
+    priority: 800
+    then:
+      - light.turn_on:
+          id: backlight
+          brightness: 100%
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: ESP32S3
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+
+logger:
+  level: ERROR
+
+api:
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "${friendly_name} Fallback"
+    password: !secret ap_password
+
+captive_portal:
+
+spi:
+  id: tft_spi
+  clk_pin: ${tft_clk}
+  mosi_pin: ${tft_mosi}
+
+output:
+  - platform: ledc
+    id: tft_bl_pwm
+    pin: ${tft_bl}
+    frequency: 20000 Hz
+
+light:
+  - platform: monochromatic
+    id: backlight
+    output: tft_bl_pwm
+    internal: true
+    restore_mode: ALWAYS_ON
+
+font:
+  - file: "gfonts://Roboto"
+    id: font_small
+    size: 14
+  - file: "gfonts://Roboto"
+    id: font_big
+    size: 28
+
+globals:
+  - id: frame
+    type: uint32_t
+    initial_value: "0"
+
+display:
+  - platform: st7789v
+    id: tft
+    model: CUSTOM
+    width: ${tft_width}
+    height: ${tft_height}
+    rotation: ${tft_rotation}
+    cs_pin: ${tft_cs}
+    dc_pin: ${tft_dc}
+    reset_pin: ${tft_reset}
+
+    # High quality: full 16-bit color (RGB565). (Set to true for faster/lower quality RGB332)
+    eightbitcolor: false
+
+    # Push the SPI bus hard; lower if your wiring is long/noisy.
+    data_rate: 40MHz
+
+    # ~30 FPS target. Increase to 16ms for more stress.
+    update_interval: 33ms
+
+    lambda: |-
+      id(frame)++;
+      const int W = ${tft_width};
+      const int H = ${tft_height};
+      const uint32_t t = millis();
+
+      // --- Full-screen color bars (exposes banding / color order issues) ---
+      const Color bars[8] = {
+        Color(255, 0, 0), Color(255, 128, 0), Color(255, 255, 0), Color(0, 255, 0),
+        Color(0, 255, 255), Color(0, 0, 255), Color(128, 0, 255), Color(255, 0, 255)
+      };
+      const int bw = (W / 8) > 0 ? (W / 8) : 1;
+      for (int i = 0; i < 8; i++) {
+        it.filled_rectangle(i * bw, 0, (i == 7) ? (W - i * bw) : bw, H, bars[i]);
+      }
+
+      // --- Animated scanlines + checkerboard (exposes tearing / pixel alignment) ---
+      const int y_off = (t / 10) % 12;
+      for (int y = y_off; y < H; y += 12) {
+        it.horizontal_line(0, y, W, Color(0, 0, 0));
+      }
+
+      const int cb_size = (W < H ? W : H) / 3;
+      const int cb_x0 = (W - cb_size) / 2;
+      const int cb_y0 = (H - cb_size) / 2;
+      for (int y = 0; y < cb_size; y += 6) {
+        for (int x = 0; x < cb_size; x += 6) {
+          const bool on = (((x + (t / 25)) / 6) ^ (y / 6)) & 1;
+          it.filled_rectangle(cb_x0 + x, cb_y0 + y, 6, 6, on ? Color(255, 255, 255) : Color(0, 0, 0));
+        }
+      }
+      it.rectangle(cb_x0, cb_y0, cb_size, cb_size, Color(255, 255, 255));
+
+      // --- Moving shapes (stress lots of primitives every frame) ---
+      const int cx = (int)((W / 2) + (W / 3) * sinf((float)t / 700.0f));
+      const int cy = (int)((H / 2) + (H / 3) * cosf((float)t / 900.0f));
+      const int r = (int)(12 + 10 * (0.5f + 0.5f * sinf((float)t / 300.0f)));
+
+      it.filled_circle(cx, cy, r, Color(255, 255, 255));
+      it.circle(cx, cy, r + 2, Color(0, 0, 0));
+
+      const int box_w = W / 4;
+      const int box_h = H / 6;
+      const int bx = (int)((t / 4) % (W + box_w)) - box_w;
+      const int by = (int)((t / 6) % (H + box_h)) - box_h;
+      it.filled_rectangle(bx, by, box_w, box_h, Color(0, 0, 0));
+      it.rectangle(bx, by, box_w, box_h, Color(255, 255, 255));
+
+      // --- FPS estimate (drawn over a solid panel for readability) ---
+      static uint32_t last_ms = 0;
+      static uint32_t last_frame = 0;
+      static uint16_t fps = 0;
+      if (t - last_ms >= 1000) {
+        fps = (uint16_t)(id(frame) - last_frame);
+        last_frame = id(frame);
+        last_ms = t;
+      }
+
+      it.filled_rectangle(0, 0, W, 44, Color(0, 0, 0));
+      it.printf(6, 6, id(font_small), Color(255, 255, 255), TextAlign::TOP_LEFT, "RGB565 HQ test  |  %dx%d", W, H);
+      it.printf(6, 24, id(font_big), Color(255, 255, 255), TextAlign::TOP_LEFT, "%u FPS", fps);
