@@ -1,0 +1,79 @@
+esphome:
+  name: esp32s3-display-hq-test
+  friendly_name: ESP32-S3 Display HQ Test
+
+esp32:
+  board: esp32-s3-devkitc-1
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+
+# 16N8 modules normally include PSRAM; keep it enabled for display buffering.
+psram:
+  mode: octal
+  speed: 80MHz
+
+# Keep logs minimal so drawing performance is the focus.
+logger:
+  level: ERROR
+
+spi:
+  clk_pin: GPIO18
+  mosi_pin: GPIO11
+
+display:
+  - platform: st7789v
+    id: tft
+    model: CUSTOM
+    width: 240
+    height: 320
+    offset_width: 0
+    offset_height: 0
+    cs_pin: GPIO10
+    dc_pin: GPIO14
+    reset_pin: GPIO4
+    rotation: 90
+    eightbitcolor: false
+    update_interval: 33ms
+    lambda: |-
+      // High-load full-screen animation for quality/performance validation.
+      const int w = 320;
+      const int h = 240;
+      const uint32_t t = millis();
+
+      // 1) Per-line dynamic gradient (color depth + fill stress test).
+      for (int y = 0; y < h; y++) {
+        uint8_t r = (y + (t / 8)) & 0xFF;
+        uint8_t g = ((y * 2) + (t / 10)) & 0xFF;
+        uint8_t b = (255 - y + (t / 6)) & 0xFF;
+        it.filled_rectangle(0, y, w, 1, Color(r, g, b));
+      }
+
+      // 2) Moving grid overlay (line rendering + motion test).
+      const int step = 20;
+      int x_shift = (t / 15) % step;
+      int y_shift = (t / 18) % step;
+      for (int x = -step; x < w + step; x += step) {
+        it.line(x + x_shift, 0, x + x_shift, h - 1, Color(255, 255, 255));
+      }
+      for (int y = -step; y < h + step; y += step) {
+        it.line(0, y + y_shift, w - 1, y + y_shift, Color(255, 255, 255));
+      }
+
+      // 3) Moving geometric objects (blend/edge quality check).
+      int box_w = 92;
+      int box_h = 92;
+      int box_x = (int)((t / 7) % (w + box_w)) - box_w;
+      int box_y = (int)((t / 9) % (h + box_h)) - box_h;
+      it.rectangle(box_x, box_y, box_w, box_h, Color(255, 230, 0));
+
+      int c1_x = (t / 5) % w;
+      int c2_x = (w - 1) - ((t / 6) % w);
+      it.filled_circle(c1_x, h / 2, 28, Color(255, 0, 120));
+      it.filled_circle(c2_x, h / 2, 28, Color(0, 255, 220));
+
+      // 4) Fixed reference color blocks for visual quality confirmation.
+      it.filled_rectangle(0, 0, 28, 28, Color(255, 0, 0));
+      it.filled_rectangle(292, 0, 28, 28, Color(0, 255, 0));
+      it.filled_rectangle(0, 212, 28, 28, Color(0, 0, 255));
+      it.filled_rectangle(292, 212, 28, 28, Color(255, 255, 255));
