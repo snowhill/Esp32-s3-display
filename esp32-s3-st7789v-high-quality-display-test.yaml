@@ -10,14 +10,16 @@ substitutions:
   tft_rotation: "90"
 
   # SPI pins (set to your wiring / PCB)
-  tft_clk: GPIO18
-  tft_mosi: GPIO23
-  tft_cs: GPIO27
-  tft_dc: GPIO14
-  tft_reset: GPIO4
+  # Defaults chosen to be valid on ESP32-S3 DevKitC-1.
+  # Change to match your actual wiring/PCB.
+  tft_clk: GPIO12
+  tft_mosi: GPIO11
+  tft_cs: GPIO10
+  tft_dc: GPIO9
+  tft_reset: GPIO14
 
   # Optional backlight PWM pin (remove `output:`/`light:` sections if not used)
-  tft_bl: GPIO5
+  tft_bl: GPIO2
 
 esphome:
   name: ${name}
@@ -48,7 +50,8 @@ wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
   ap:
-    ssid: "${friendly_name} Fallback"
+    # Keep <= 32 chars (ESP32 limit)
+    ssid: "S3-HQ-Fallback"
     password: !secret ap_password
 
 captive_portal:
@@ -90,6 +93,8 @@ display:
     model: CUSTOM
     width: ${tft_width}
     height: ${tft_height}
+    offset_width: 0
+    offset_height: 0
     rotation: ${tft_rotation}
     cs_pin: ${tft_cs}
     dc_pin: ${tft_dc}
